@@ -1,0 +1,10 @@
+# Model catalog for the route head — mirrors the router registry ModelCards.
+# Keep ids identical to the serving-side registry so route logits map 1:1.
+models:
+  - {id: zen-nano-0.6b,   backend: local, tasks: [cheap_chat, general],        cost_per_1k: 0.0}
+  - {id: zen-coder-24b,   backend: local, tasks: [code],                       cost_per_1k: 0.0}
+  - {id: zen-agent-4b,    backend: local, tasks: [general, reasoning],         cost_per_1k: 0.0}
+  - {id: hanzo-fast,      backend: cloud, tasks: [cheap_chat, general],        cost_per_1k: 0.1}
+  - {id: hanzo-balanced,  backend: cloud, tasks: [code, reasoning, creative],  cost_per_1k: 0.6}
+  - {id: hanzo-max,       backend: cloud, tasks: [reasoning, math, long_context], cost_per_1k: 3.0}
+  - {id: hanzo-vision,    backend: cloud, tasks: [vision],                     cost_per_1k: 1.0}

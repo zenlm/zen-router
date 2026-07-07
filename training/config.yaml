@@ -1,0 +1,26 @@
+# zen-router training config
+base_model: zenlm/zen-nano-0.6b
+output_dir: out/zen-router
+
+tasks: [code, reasoning, math, creative, vision, long_context, cheap_chat, general]
+
+heads:
+  task: {type: classification, classes: 8}
+  route: {type: classification, classes_from: catalog}   # model catalog ids
+  features: {type: projection, dim: 256}                 # bandit feature head
+
+catalog: training/catalog.yaml   # ModelCard ids + cost_per_1k, mirrors router registry
+
+sft:
+  lr: 2.0e-5
+  epochs: 2
+  batch_size: 64
+  max_seq_len: 2048
+  pooled: last_token
+
+grpo:
+  # reward = quality - lambda*cost - mu*latency (matches serving SLO)
+  lambda_cost: 0.35
+  mu_latency: 0.15
+  group_size: 8
+  lr: 5.0e-6
