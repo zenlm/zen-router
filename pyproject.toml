@@ -1,0 +1,13 @@
+[project]
+name = "zen-router"
+version = "0.1.0"
+description = "Tiny trainable routing model: reads a prompt, picks the best model"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.11"
+dependencies = ["torch", "transformers", "pyyaml"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
