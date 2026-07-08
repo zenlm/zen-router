@@ -1,0 +1,23 @@
+# Per-model token prices, used ONLY as a fallback when a suite has no native
+# per-example cost. RouterBench (the one profile suite we convert today) ships
+# `<model>|total_cost` per row, so build_profiles uses that directly and this
+# file is unused for it. It exists so that a `raw` suite converted after
+# generation can price tokens = (input+output tokens) x per-1k price.
+#
+# blended_per_1k = (input_per_million + output_per_million) / 2 / 1000 USD,
+# same convention as training/catalog.yaml cost_per_1k. Reuse catalog ids where
+# a model is in training/catalog.yaml; the RouterBench-era ids below are sourced
+# from each provider's 2023-2024 public list and marked `# verify`.
+prices:
+  # RouterBench-era models (2023/2024 public list snapshots).
+  gpt-4-1106-preview:                 0.02     # 10/30    # verify
+  gpt-3.5-turbo-1106:                 0.00125  # 0.5/1.5  # verify
+  claude-v2:                          0.012    # 8/24     # verify
+  claude-v1:                          0.012    # 8/24     # verify
+  claude-instant-v1:                  0.0012   # 0.8/2.4  # verify
+  mistralai/mixtral-8x7b-chat:        0.0006   # 0.6/0.6  # verify
+  mistralai/mistral-7b-chat:          0.0002   # 0.2/0.2  # verify
+  meta/llama-2-70b-chat:              0.0009   # 0.9/0.9  # verify
+  meta/code-llama-instruct-34b-chat:  0.0008   # 0.8/0.8  # verify
+  zero-one-ai/Yi-34B-Chat:            0.0008   # 0.8/0.8  # verify
+  WizardLM/WizardLM-13B-V1.2:         0.0003   # 0.3/0.3  # verify
