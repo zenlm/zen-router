@@ -1,10 +1,56 @@
-# Model catalog for the route head — mirrors the router registry ModelCards.
-# Keep ids identical to the serving-side registry so route logits map 1:1.
+# Model catalog for the route head -- the routable universe.
+#
+# Route-to-anything: adding a model as a routing target is ONE row here (the
+# route head sizes itself from this file via `classes_from: catalog` in
+# config.yaml) PLUS the serving side already dispatching it -- the Hanzo gateway
+# ModelRoute for cloud providers, hanzo-engine for local. A brand-new row's
+# logit is dead until training data for it exists (mask or retrain).
+#
+# cost_per_1k: blended USD per 1k tokens = (input+output)/2 per-million / 1000.
+# Prices are the gateway's live pricing, sourced from
+#   /Users/a/work/hanzo/hanzoai/ai/conf/models.yaml
+# (which refreshes from pricing.hanzo.ai in live_mode). The per-million
+# (input/output) each row was derived from is noted inline. Rows marked
+# `# verify` are current top-end models not yet in that config; their price is
+# taken from the provider's public list and must be verified against
+# pricing.hanzo.ai.
 models:
-  - {id: zen-nano-0.6b,   backend: local, tasks: [cheap_chat, general],        cost_per_1k: 0.0}
-  - {id: zen-coder-24b,   backend: local, tasks: [code],                       cost_per_1k: 0.0}
-  - {id: zen-agent-4b,    backend: local, tasks: [general, reasoning],         cost_per_1k: 0.0}
-  - {id: hanzo-fast,      backend: cloud, tasks: [cheap_chat, general],        cost_per_1k: 0.1}
-  - {id: hanzo-balanced,  backend: cloud, tasks: [code, reasoning, creative],  cost_per_1k: 0.6}
-  - {id: hanzo-max,       backend: cloud, tasks: [reasoning, math, long_context], cost_per_1k: 3.0}
-  - {id: hanzo-vision,    backend: cloud, tasks: [vision],                     cost_per_1k: 1.0}
+  # -- local zen (on-device via hanzo-engine, no per-token cost) --------------
+  - {id: zen-nano-0.6b, backend: local,  provider: engine,  tasks: [cheap_chat, general],            cost_per_1k: 0.0}      # 0.6B, runs on laptop/phone
+  - {id: zen-agent-4b,  backend: local,  provider: engine,  tasks: [general, reasoning],             cost_per_1k: 0.0}      # 4B
+  - {id: zen-coder-24b, backend: local,  provider: engine,  tasks: [code, reasoning],                cost_per_1k: 0.0}      # 24B
+
+  # -- zen cloud tiers (gateway do-ai) ---------------------------------------
+  - {id: zen5-flash,    backend: cloud,  provider: do-ai,   tasks: [cheap_chat, general],            cost_per_1k: 0.0002}   # 0.1/0.3
+  - {id: zen5,          backend: cloud,  provider: do-ai,   tasks: [general, reasoning],             cost_per_1k: 0.0063}   # 3.0/9.6
+  - {id: zen5-coder,    backend: cloud,  provider: do-ai,   tasks: [code],                           cost_per_1k: 0.0063}   # 3.0/9.6
+  - {id: zen5-max,      backend: cloud,  provider: do-ai,   tasks: [reasoning, math, long_context],  cost_per_1k: 0.024}    # 12.0/36.0
+  - {id: zen-omni,      backend: cloud,  provider: do-ai,   tasks: [vision, general],                cost_per_1k: 0.0042}   # 1.8/6.6
+  - {id: zen-vl,        backend: cloud,  provider: do-ai,   tasks: [vision],                         cost_per_1k: 0.00113}  # 0.45/1.8
+
+  # -- Anthropic Claude (gateway anthropic) ----------------------------------
+  - {id: claude-opus-4-8,             backend: cloud, provider: anthropic, tasks: [code, reasoning, math, long_context], cost_per_1k: 0.045}  # 15/75  # verify: newer than gateway opus-4-6
+  - {id: claude-fable-5,              backend: cloud, provider: anthropic, tasks: [reasoning, creative, general],        cost_per_1k: 0.045}  # 15/75  # verify: GA top model, provider list
+  - {id: claude-sonnet-4-6,           backend: cloud, provider: anthropic, tasks: [code, reasoning, creative, general],  cost_per_1k: 0.009}  # 3/15   (in gateway)
+  - {id: claude-haiku-4-5-20251001,   backend: cloud, provider: anthropic, tasks: [cheap_chat, general],                cost_per_1k: 0.003}  # 1/5    (gateway claude-haiku-4-5)
+
+  # -- OpenAI (gateway do-ai / openai-direct) --------------------------------
+  - {id: gpt-5.5,             backend: cloud, provider: openai, tasks: [reasoning, code, general],           cost_per_1k: 0.01}     # 5/15    # verify: newer than gpt-5.2
+  - {id: gpt-5.4-mini,        backend: cloud, provider: openai, tasks: [cheap_chat, general],                cost_per_1k: 0.00313}  # 1.25/5  # verify: mini tier
+  - {id: gpt-5.2-pro,         backend: cloud, provider: openai, tasks: [reasoning, math, long_context],      cost_per_1k: 0.02}     # 10/30   (in gateway)
+  - {id: gpt-5.1-codex-max,   backend: cloud, provider: openai, tasks: [code],                               cost_per_1k: 0.0075}   # 3/12    (in gateway)
+  - {id: o3,                  backend: cloud, provider: openai, tasks: [reasoning, math],                    cost_per_1k: 0.025}    # 10/40   (in gateway)
+
+  # -- Google Gemini (not in gateway; provider public list) ------------------
+  - {id: gemini-3-pro,        backend: cloud, provider: google, tasks: [reasoning, long_context, vision],    cost_per_1k: 0.00875}  # 2.5/15  # verify
+  - {id: gemini-3-flash,      backend: cloud, provider: google, tasks: [cheap_chat, general, long_context],  cost_per_1k: 0.0014}   # 0.3/2.5 # verify
+
+  # -- xAI Grok (not in gateway; provider public list) -----------------------
+  - {id: grok-4,              backend: cloud, provider: xai,    tasks: [reasoning, code, general],           cost_per_1k: 0.009}    # 3/15    # verify
+
+  # -- DeepSeek (gateway do-ai) ----------------------------------------------
+  - {id: deepseek-v3.2,       backend: cloud, provider: do-ai,   tasks: [code, general],                    cost_per_1k: 0.00069}  # 0.27/1.1
+  - {id: deepseek-reasoner,   backend: cloud, provider: do-ai,   tasks: [reasoning, math],                  cost_per_1k: 0.0055}   # 3/8
+
+  # -- Moonshot Kimi (gateway do-ai) -----------------------------------------
+  - {id: kimi-k2,             backend: cloud, provider: do-ai,   tasks: [reasoning, code, long_context],    cost_per_1k: 0.005}    # 2/8

@@ -34,9 +34,9 @@ class RoutingDataset(Dataset):
 
 
 class ZenRouter(nn.Module):
-    def __init__(self, base: str, n_tasks: int, n_routes: int, feat_dim: int):
+    def __init__(self, base: str, n_tasks: int, n_routes: int, feat_dim: int, dtype=torch.float32):
         super().__init__()
-        self.backbone = AutoModel.from_pretrained(base, torch_dtype=torch.bfloat16)
+        self.backbone = AutoModel.from_pretrained(base, dtype=dtype)
         hidden = self.backbone.config.hidden_size
         self.task_head = nn.Linear(hidden, n_tasks)
         self.route_head = nn.Linear(hidden, n_routes)
@@ -60,6 +60,7 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])
     ds = RoutingDataset(Path("data/routing-sft.jsonl"), cfg["tasks"], catalog)
     model = ZenRouter(cfg["base_model"], len(cfg["tasks"]), len(catalog), cfg["heads"]["features"]["dim"])
+    print(f"route head: {len(catalog)} classes (classes_from: catalog); task head: {len(cfg['tasks'])} classes")
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     model.to(device).train()
 
@@ -88,7 +89,9 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out / "zen-router.pt")
     tok.save_pretrained(out)
-    (out / "router_config.json").write_text(json.dumps({"tasks": cfg["tasks"], "catalog": catalog}))
+    (out / "router_config.json").write_text(
+        json.dumps({"base": cfg["base_model"], "tasks": cfg["tasks"], "catalog": catalog})
+    )
     print(f"saved -> {out}")
 
 
