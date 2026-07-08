@@ -1,0 +1,22 @@
+# Scaled MPS run: frozen backbone, heads-only, on the combined local + agentic
+# corpus dataset. Backbone frozen (--freeze-backbone) => published weights are
+# the three linear heads only (private-safe); embeddings are precomputed once.
+base_model: /Users/a/work/zen/models/zen-nano-0.6b
+output_dir: out/zen-router
+data: data/routing-sft.jsonl
+
+tasks: [code, reasoning, math, creative, vision, long_context, cheap_chat, general]
+
+heads:
+  task: {type: classification, classes: 8}
+  route: {type: classification, classes_from: catalog}
+  features: {type: projection, dim: 256}
+
+catalog: training/catalog.yaml
+
+sft:
+  lr: 1.0e-3          # heads-only: a higher LR than the full-finetune run
+  epochs: 12         # cheap once embeddings are cached
+  batch_size: 32     # backbone forward batch during the one-time precompute
+  max_seq_len: 512
+  pooled: last_token

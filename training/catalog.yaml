@@ -28,11 +28,14 @@ models:
   - {id: zen-omni,      backend: cloud,  provider: do-ai,   tasks: [vision, general],                cost_per_1k: 0.0042}   # 1.8/6.6
   - {id: zen-vl,        backend: cloud,  provider: do-ai,   tasks: [vision],                         cost_per_1k: 0.00113}  # 0.45/1.8
 
-  # -- Anthropic Claude (gateway anthropic) ----------------------------------
-  - {id: claude-opus-4-8,             backend: cloud, provider: anthropic, tasks: [code, reasoning, math, long_context], cost_per_1k: 0.045}  # 15/75  # verify: newer than gateway opus-4-6
-  - {id: claude-fable-5,              backend: cloud, provider: anthropic, tasks: [reasoning, creative, general],        cost_per_1k: 0.045}  # 15/75  # verify: GA top model, provider list
-  - {id: claude-sonnet-4-6,           backend: cloud, provider: anthropic, tasks: [code, reasoning, creative, general],  cost_per_1k: 0.009}  # 3/15   (in gateway)
-  - {id: claude-haiku-4-5-20251001,   backend: cloud, provider: anthropic, tasks: [cheap_chat, general],                cost_per_1k: 0.003}  # 1/5    (gateway claude-haiku-4-5)
+  # -- Anthropic Claude (gateway anthropic; dated ids normalized to undated) --
+  - {id: claude-opus-4-8,     backend: cloud, provider: anthropic, tasks: [code, reasoning, math, long_context], cost_per_1k: 0.045}  # 15/75  # verify: newer than gateway opus-4-6
+  - {id: claude-opus-4-5,     backend: cloud, provider: anthropic, tasks: [code, reasoning, math, long_context], cost_per_1k: 0.045}  # 15/75  (in gateway)
+  - {id: claude-opus-4-1,     backend: cloud, provider: anthropic, tasks: [reasoning, math, long_context],       cost_per_1k: 0.045}  # 15/75  (gateway claude-4-1-opus)
+  - {id: claude-fable-5,      backend: cloud, provider: anthropic, tasks: [reasoning, creative, general],        cost_per_1k: 0.045}  # 15/75  # verify: GA top model, provider list
+  - {id: claude-sonnet-4-6,   backend: cloud, provider: anthropic, tasks: [code, reasoning, creative, general],  cost_per_1k: 0.009}  # 3/15   (in gateway)
+  - {id: claude-sonnet-4-5,   backend: cloud, provider: anthropic, tasks: [code, reasoning, creative, general],  cost_per_1k: 0.009}  # 3/15   (in gateway)
+  - {id: claude-haiku-4-5,    backend: cloud, provider: anthropic, tasks: [cheap_chat, general],                 cost_per_1k: 0.003}  # 1/5    (in gateway)
 
   # -- OpenAI (gateway do-ai / openai-direct) --------------------------------
   - {id: gpt-5.5,             backend: cloud, provider: openai, tasks: [reasoning, code, general],           cost_per_1k: 0.01}     # 5/15    # verify: newer than gpt-5.2
@@ -54,3 +57,6 @@ models:
 
   # -- Moonshot Kimi (gateway do-ai) -----------------------------------------
   - {id: kimi-k2,             backend: cloud, provider: do-ai,   tasks: [reasoning, code, long_context],    cost_per_1k: 0.005}    # 2/8
+
+  # -- MiniMax (gateway fireworks) -------------------------------------------
+  - {id: minimax-m2,          backend: cloud, provider: fireworks, tasks: [code, general],                  cost_per_1k: 0.0025}   # 1/4 (gateway minimax-m2p5)
