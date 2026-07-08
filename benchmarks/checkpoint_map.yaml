@@ -1,0 +1,40 @@
+# Family/tier bridge: RouterBench's 2023/2024 model universe -> the trained
+# zen-router route head's 28-class catalog (training/catalog.yaml).
+#
+# WHY THIS FILE EXISTS. The checkpoint's route head emits a logit per catalog
+# model. RouterBench's 11 candidates are 2023-era and share ZERO ids with that
+# 2026 catalog (suites.yaml model_map is empty, by design). Scoring RouterBench
+# models directly against the head would make every column identical (all
+# out-of-catalog -> logits.min()), which is a degenerate router. So we map each
+# RouterBench model to the catalog model that occupies the SAME (family, tier)
+# slot, and read that class's route-head logit as the RouterBench model's score.
+#
+# WHAT THIS MEASURES — read honestly. This does NOT measure native in-catalog
+# routing (none of these 11 models are in the catalog, and the router saw 0 rows
+# for them in training). It measures whether the head's learned TASK/TIER
+# DISCRIMINATION — "hard reasoning -> frontier, cheap chat -> small model" —
+# transfers onto RouterBench's cost/quality universe when projected through this
+# family/tier bridge. A win here is evidence of transferable tier discrimination;
+# it is not a claim of routing among RouterBench's actual models.
+#
+# Mapping principle: match provider family first, then capability tier
+#   (frontier / mid / cheap / code-specialist / small-open). One catalog class
+#   per RouterBench model — a clean 11->11 bijection, no collisions, so distinct
+#   RouterBench models keep distinct route-head columns.
+map:
+  # -- closed frontier -------------------------------------------------------
+  gpt-4-1106-preview: gpt-5.5                # OpenAI flagship  -> OpenAI flagship
+  claude-v2:          claude-opus-4-5        # Anthropic flagship (era) -> Opus
+  claude-v1:          claude-opus-4-1        # Anthropic flagship (older) -> Opus (prev)
+  # -- closed cheap ----------------------------------------------------------
+  gpt-3.5-turbo-1106: gpt-5.4-mini           # OpenAI cheap/mini -> mini
+  claude-instant-v1:  claude-haiku-4-5       # Anthropic cheap   -> Haiku
+  # -- open, large / mid -----------------------------------------------------
+  meta/llama-2-70b-chat:         kimi-k2       # open large dense -> open large MoE
+  mistralai/mixtral-8x7b-chat:   deepseek-v3.2 # open MoE, cheap-mid -> open cheap-mid
+  zero-one-ai/Yi-34B-Chat:       minimax-m2    # open mid instruct -> open mid
+  # -- open, code specialist -------------------------------------------------
+  meta/code-llama-instruct-34b-chat: zen5-coder  # open code model -> code specialist
+  # -- open, small -----------------------------------------------------------
+  mistralai/mistral-7b-chat:  zen5-flash      # cheapest open dense -> cheapest cloud tier
+  WizardLM/WizardLM-13B-V1.2: zen-agent-4b     # small open instruct -> small local

@@ -156,6 +156,27 @@ counterfactual labels** -- the same prompt served by many models with measured
 quality/cost/latency. That is exactly what the RouterBench pipeline in
 `benchmarks/` provides, and is the stated path forward.
 
+### RouterBench transfer eval (full suite, 36,481 prompts) — a negative result
+
+We ran the published RouterBench cost-quality methodology (Hu et al. 2024,
+arXiv:2403.12031) on the **full** suite — all 36,497 examples × 11 models =
+401,467 rows, 36,481 prompts with full model coverage — measuring the trained
+Run-B checkpoint against oracle, random, the non-routing interpolation hull, an
+untrained prior heuristic, and every individual model (`benchmarks/`, Apple M4
+Max / MPS, backbone fp16, **27.8 min** wall-clock to batch-embed + route all
+prompts). **The checkpoint scores AIQ 0.6248 — below the interpolation hull
+(0.7054), the untrained prior (0.7427), and the oracle upper bound (0.8701).** It
+does *not* beat statically picking one model here. This is expected and we report
+it plainly: RouterBench's 11 models are 2023-era with **zero overlap** with the
+2026 catalog, so scores are read through a documented family/tier bridge
+(`benchmarks/checkpoint_map.yaml`) — this measures *transferred task/tier
+discrimination*, not native in-catalog routing — and the checkpoint saw **zero
+training rows** for those targets (its corpus is Claude-Opus-skewed, 8/28 models
+with data). The head keeps voting frontier tier and cannot trace a cost-penalized
+frontier. Real RouterBench performance requires training on RouterBench's own
+per-model labels; the numbers and mapping are fully reproducible (see
+`benchmarks/README.md`).
+
 **Single-forward routing latency (Run B, n=1,941).** One prompt, tokenize +
 forward, MPS fp32: **mean 95.7 ms, p50 57.0 ms, p99 303.6 ms**. Unquantized
 eager Transformers; the `<50 ms CPU / <10 ms Metal` target is at Q4 (see
