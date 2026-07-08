@@ -1,0 +1,154 @@
+# Eval-suite registry for zen-router replication of published LLM-routing research.
+#
+# Each suite names a public Hugging Face dataset and how to read it. All ids
+# below were verified to resolve (HTTP 200 on
+# https://huggingface.co/api/datasets/<id>) on 2026-07-07.
+#
+# `kind` decides what a suite is good for:
+#   profile     -- per-example, per-model correctness score AND cost already in
+#                  the dataset. Directly convertible to router train/eval rows
+#                  by benchmarks/build_profiles.py. (RouterBench is the canonical
+#                  one; this is the FrugalGPT / RouterBench methodology substrate.)
+#   preference  -- pairwise human preference between two model answers
+#                  (Arena / LMSYS). A router *quality* signal, not a cost curve;
+#                  needs a Bradley-Terry / win-rate reduction, not raw conversion.
+#   raw         -- benchmark questions with a gold answer but NO per-model
+#                  outputs. To become a `profile` you must first generate answers
+#                  from each candidate model and grade them. Listed so the
+#                  methodology (which models, which metric) is declared in one
+#                  place; conversion is out of scope until generations exist.
+#
+# Nothing here is dropped -- every id resolved. Rows that would need generation
+# to be usable are marked kind: raw and are not fed to build_profiles.
+
+suites:
+  # ---- profile: the RouterBench substrate (per-example model score + cost) ----
+  routerbench:
+    hf_id: withmartian/routerbench
+    kind: profile
+    citation: "Hu et al., RouterBench (2024), arXiv:2403.12031"
+    # Stored as pickled pandas DataFrames (not parquet), so we read via
+    # huggingface_hub.hf_hub_download + pandas.read_pickle.
+    files:
+      0shot: routerbench_0shot.pkl   # default
+      5shot: routerbench_5shot.pkl
+    # Wide format: one row per prompt; per-model columns give the signal.
+    schema:
+      prompt: prompt
+      task: eval_name          # source benchmark name -> mapped by task_map below
+      # For each model id M the frame has:
+      #   "<M>"               -> correctness score in [0,1]  (quality)
+      #   "<M>|total_cost"    -> USD cost for that response  (native cost)
+      #   "<M>|model_response"-> the generated text          (unused here)
+      score_suffix: ""              # bare model-name column is the score
+      cost_suffix: "|total_cost"
+      response_suffix: "|model_response"
+    # No latency in RouterBench -> emitted rows carry latency_ms: null.
+    models:
+      - WizardLM/WizardLM-13B-V1.2
+      - claude-instant-v1
+      - claude-v1
+      - claude-v2
+      - gpt-3.5-turbo-1106
+      - gpt-4-1106-preview
+      - meta/code-llama-instruct-34b-chat
+      - meta/llama-2-70b-chat
+      - mistralai/mistral-7b-chat
+      - mistralai/mixtral-8x7b-chat
+      - zero-one-ai/Yi-34B-Chat
+    # Map dataset model names -> training/catalog.yaml ids where the family and
+    # generation match. RouterBench's 11 models are 2023-era and NONE are in the
+    # current catalog, so this map is empty: each keeps its own id as a routing
+    # target (the route head is catalog-driven and would size itself from these
+    # ids on retrain). Populate here if/when a catalog id is the same model.
+    model_map: {}
+    # eval_name (86 distinct) -> router task label. Prefix match, longest first,
+    # falling back to `general`. Router tasks: code reasoning math creative
+    # vision long_context cheap_chat general.
+    task_map:
+      grade-school-math: math
+      math: math
+      chinese-remainder-theorem: math
+      mbpp: code
+      code: code
+      humaneval: code
+      mmlu: reasoning
+      arc: reasoning
+      hellaswag: reasoning
+      winogrande: reasoning
+      openbook: reasoning
+      mt-bench: creative
+      "": general
+
+  # ---- preference: Arena / LMSYS human votes (RouteLLM training substrate) ----
+  lmsys_arena_conversations:
+    hf_id: lmsys/chatbot_arena_conversations
+    kind: preference
+    citation: "Zheng et al., LMSYS Chatbot Arena (2023), arXiv:2306.05685"
+    schema: {model_a: model_a, model_b: model_b, winner: winner, prompt: conversation_a}
+    note: "33k pairwise votes. Reduce to per-model strength (Bradley-Terry) before use; not a cost curve."
+
+  arena_human_preference_100k:
+    hf_id: lmarena-ai/arena-human-preference-100k
+    kind: preference
+    citation: "LMArena (2024), human preference votes"
+    schema: {model_a: model_a, model_b: model_b, winner: winner, prompt: prompt}
+    note: "Larger successor vote set; same reduction as above."
+
+  # ---- raw: question sets. Need per-model generations to become profiles. ----
+  mmlu_pro:
+    hf_id: TIGER-Lab/MMLU-Pro
+    kind: raw
+    citation: "Wang et al., MMLU-Pro (2024), arXiv:2406.01574"
+    schema: {question: question, options: options, answer: answer}
+    default_task: reasoning
+  gpqa:
+    hf_id: Idavidrein/gpqa
+    kind: raw
+    citation: "Rein et al., GPQA (2023), arXiv:2311.12022"
+    config: gpqa_main
+    schema: {question: Question, answer: "Correct Answer"}
+    default_task: reasoning
+  gsm8k:
+    hf_id: openai/gsm8k
+    kind: raw
+    citation: "Cobbe et al., GSM8K (2021), arXiv:2110.14168"
+    config: main
+    schema: {question: question, answer: answer}
+    default_task: math
+  math_500:
+    hf_id: HuggingFaceH4/MATH-500
+    kind: raw
+    citation: "Lightman et al., MATH / PRM800K (2023); HF MATH-500 subset"
+    schema: {question: problem, answer: answer}
+    default_task: math
+  humaneval:
+    hf_id: openai/openai_humaneval
+    kind: raw
+    citation: "Chen et al., HumanEval (2021), arXiv:2107.03374"
+    schema: {prompt: prompt, tests: test, entry_point: entry_point}
+    default_task: code
+  mbpp:
+    hf_id: google-research-datasets/mbpp
+    kind: raw
+    citation: "Austin et al., MBPP (2021), arXiv:2108.07732"
+    schema: {prompt: text, tests: test_list}
+    default_task: code
+  livecodebench:
+    hf_id: livecodebench/code_generation_lite
+    kind: raw
+    citation: "Jain et al., LiveCodeBench (2024), arXiv:2403.07974"
+    schema: {question: question_content}
+    default_task: code
+  arena_hard:
+    hf_id: lmarena-ai/arena-hard-auto-v0.1
+    kind: raw
+    citation: "Li et al., Arena-Hard-Auto (2024)"
+    schema: {prompt: prompt}
+    default_task: general
+  ifeval:
+    hf_id: google/IFEval
+    kind: raw
+    citation: "Zhou et al., IFEval (2023), arXiv:2311.07911"
+    schema: {prompt: prompt}
+    default_task: general
