@@ -189,6 +189,54 @@ data/routing-eval.jsonl`.
 
 See `docs/integration.md`.
 
+## Quantized deployment
+
+The published weights are **heads only** (1.2 MB), so serving splits in two: the
+public `zen-nano-0.6b` backbone runs **quantized in `llama.cpp` embedding mode**
+and the three linear heads run in the caller in **numpy** (a 1024×28 matmul is
+microseconds). No torch at serve time. Export + recipe live in `export/`
+(`export_heads.py`, `route_gguf.py`, `verify_parity.py`, `QUANTIZED.md`).
+
+```
+prompt ─▶ llama.cpp (zen-nano Q4_K_M, --pooling last --embd-normalize -1)
+            └─ raw last-token hidden state x (1024-d, NOT normalized)
+                 └─ numpy: route/task = argmax(W·x + b);  feat = W_feat·x + b_feat
+```
+
+**Correctness.** `llama.cpp --pooling last --embd-normalize -1` emits the same
+raw post-final-norm hidden state HF returns as `last_hidden_state` (torch f16
+norm 101.4 / llama 102.7, element-wise match). Normalization must be **off** — the
+head bias is calibrated to the ≈100 norm; an L2-normalized (norm 1) vector lets
+the bias swamp the signal and collapses routing to one label.
+
+**Parity** (torch fp32/MPS pipeline vs GGUF+heads, same heads, n=100 holdout,
+Apple M4 Max, `llama.cpp` build 9430 Metal):
+
+| quant | size | task argmax | **route argmax** | route top-3 | pooled cosine |
+|-------|-----:|:-----------:|:----------------:|:-----------:|:-------------:|
+| Q4_K_M | 397 MB | 89% | **95%** | **100%** | 0.969 |
+| Q8_0   | 639 MB | 95% | **97%** | **100%** | 0.988 |
+
+The quantized backbone reproduces the torch routing pick 95% of the time at Q4
+(97% at Q8) and never drops it out of the top-3. Q4_K_M is the default; Q8_0 for
+fidelity-sensitive use.
+
+**Latency** (Q4_K_M, resident `llama-server`, prompt → model id, n=200 holdout
+mix; token lengths min 3 / p50 159 / mean 405 / max 1373):
+
+```
+mean 132 ms   p50 97 ms   p99 351 ms   min 12.5 ms
+```
+
+Stratified p50 by prompt length: 1–32 tok **50 ms** · 129–512 tok **107 ms** ·
+513+ tok **251 ms** — a ~40–50 ms Metal-dispatch + HTTP floor plus linear
+prompt-processing (p50 tracks the earlier `llama-bench pp1024 ≈ 112 ms`). For
+reference the **fp32 torch/MPS** path measured p50 **57 ms** on the same holdout:
+for a 0.6B model, in-process MPS matmuls beat a Q4 `llama.cpp` **HTTP
+round-trip**, so the quantized path's win here is **footprint** (397 MB vs
+2.4 GB) and **portability** (CPU / edge / Vulkan, no torch), not raw M4-Max
+latency. See `export/QUANTIZED.md` for the full recipe and reproduction.
+
 ## Formats
 
 PyTorch (safetensors), GGUF (Q2_K–F16), MLX.
