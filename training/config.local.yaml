@@ -1,0 +1,20 @@
+# Local MPS run of the SFT: same shape as config.yaml, reduced for a brief
+# Apple-Silicon fine-tune off the on-disk zen-nano-0.6b weights (no HF download).
+base_model: /Users/a/work/zen/models/zen-nano-0.6b
+output_dir: out/zen-router
+
+tasks: [code, reasoning, math, creative, vision, long_context, cheap_chat, general]
+
+heads:
+  task: {type: classification, classes: 8}
+  route: {type: classification, classes_from: catalog}
+  features: {type: projection, dim: 256}
+
+catalog: training/catalog.yaml
+
+sft:
+  lr: 2.0e-5
+  epochs: 1
+  batch_size: 16
+  max_seq_len: 512
+  pooled: last_token

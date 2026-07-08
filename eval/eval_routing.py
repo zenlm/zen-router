@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -25,18 +27,32 @@ def main() -> None:
 
     cfg = json.loads((args.model / "router_config.json").read_text())
     tasks, catalog = cfg["tasks"], cfg["catalog"]
+    base = cfg.get("base", str(args.model))  # backbone architecture source; weights come from the .pt
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = ZenRouter(str(args.model), len(tasks), len(catalog), 256)
+    model = ZenRouter(base, len(tasks), len(catalog), 256)
     model.load_state_dict(torch.load(args.model / "zen-router.pt", map_location="cpu"))
     model.eval()
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    model.to(device)
 
     rows = [json.loads(l) for l in args.data.read_text().splitlines() if l.strip()]
     task_hits = route_hits = top3_hits = 0
+    task_pred, route_pred = Counter(), Counter()
+    latencies: list[float] = []
     for r in rows:
         enc = tok(r["prompt"], return_tensors="pt", truncation=True, max_length=2048)
+        enc = {k: v.to(device) for k, v in enc.items()}
+        t0 = time.perf_counter()
         with torch.no_grad():
             t_logits, r_logits, _ = model(**enc)
-        if tasks[t_logits.argmax().item()] == r["task"]:
+        if device != "cpu":
+            torch.mps.synchronize() if device == "mps" else torch.cuda.synchronize()
+        latencies.append((time.perf_counter() - t0) * 1000.0)
+        pt = tasks[t_logits.argmax().item()]
+        pr = catalog[r_logits[0].argmax().item()]
+        task_pred[pt] += 1
+        route_pred[pr] += 1
+        if pt == r["task"]:
             task_hits += 1
         ranked = r_logits[0].argsort(descending=True).tolist()
         if catalog[ranked[0]] == r["route"]:
@@ -45,7 +61,13 @@ def main() -> None:
             top3_hits += 1
 
     n = len(rows)
-    print(f"n={n} task_acc={task_hits/n:.3f} route_acc={route_hits/n:.3f} route_top3={top3_hits/n:.3f}")
+    lat = sorted(latencies)
+    p50, p99 = lat[n // 2], lat[int(n * 0.99)]
+    mean = sum(lat) / n
+    print(f"device={device} n={n} task_acc={task_hits/n:.3f} route_acc={route_hits/n:.3f} route_top3={top3_hits/n:.3f}")
+    print(f"single-forward routing latency (1 prompt, incl. tokenize+forward): mean={mean:.1f}ms p50={p50:.1f}ms p99={p99:.1f}ms")
+    print("task pred dist :", dict(task_pred.most_common()))
+    print("route pred dist:", dict(route_pred.most_common()))
 
 
 if __name__ == "__main__":
