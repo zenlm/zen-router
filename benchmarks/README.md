@@ -74,48 +74,122 @@ Policies (all run **without trained weights** except `checkpoint`):
 `oracle` · `prior` (untrained heuristic: score = each model's global mean quality)
 · `random` · `individual:<model>` · `checkpoint` (trained route-head logits).
 
-## Smoke run (200 samples — NOT results)
+## Full run — all 36,497 prompts (RESULTS)
 
-A 200-example CI-sized slice of RouterBench 0-shot, to prove the pipeline runs
+The whole RouterBench 0-shot suite, converted and evaluated end-to-end. These are
+the headline numbers; the 200-sample smoke slice below is only a pipeline sanity
+check.
+
+```
+make bench-data BENCH_SUITE=routerbench BENCH_SAMPLE=0          # 36,497 ex x 11 = 401,467 rows
+make bench-replicate BENCH_POLICY=checkpoint \
+     BENCH_DATA=data/profiles-routerbench.jsonl                 # trained heads + all baselines
+make bench-replicate BENCH_POLICY=prior                        # untrained heuristic AIQ
+```
+
+- **Build**: 36,497 examples × 11 models → **401,467 rows** (36,481 unique prompts);
+  `load_matrix` keeps the **36,481** prompts with full 11-model coverage (0 dropped).
+- **Hardware / wall-clock**: Apple **M4 Max**, MPS, backbone fp16. The checkpoint
+  policy batch-embeds all 36,481 prompts (backbone forward, pooled last token,
+  batch 64, embeddings cached to `out/bench/*.emb.npz`) then applies the route
+  head — **27.8 min wall-clock** end-to-end (`1667.99s real`), full dataset, no
+  subsampling. Baseline policies (numpy over the matrix) are seconds.
+
+### RouterBench-style cost-quality replication — full suite
+
+- data: `data/profiles-routerbench.jsonl`  ·  prompts: **36,481**  ·  models: **11**
+- best individual model: **gpt-4-1106-preview** (quality 0.781 @ cost 0.003292)
+- cheapest model: **mistralai/mistral-7b-chat** (quality 0.306 @ cost 0.000046)
+
+| policy / baseline | quality | cost (USD/ex) | AIQ |
+|---|---:|---:|---:|
+| oracle (per-prompt best, upper bound) | 0.912 | 0.000242 | **0.8701** |
+| prior-heuristic (untrained, global-mean quality) | 0.781 | 0.003292 | 0.7427 |
+| interpolation / non-routing hull (statically pick one) | — | — | 0.7054 |
+| **zen-router checkpoint** (frozen-backbone heads, tier-mapped) | 0.636 | 0.002413 | **0.6248** |
+| random router | 0.521 | 0.000831 | — |
+| individual: gpt-4-1106-preview (best) | 0.781 | 0.003292 | — |
+| individual: zero-one-ai/Yi-34B-Chat | 0.647 | 0.000186 | — |
+| individual: claude-v2 | 0.636 | 0.002418 | — |
+| individual: claude-v1 | 0.630 | 0.002145 | — |
+| individual: gpt-3.5-turbo-1106 | 0.619 | 0.000243 | — |
+| individual: claude-instant-v1 | 0.598 | 0.000233 | — |
+| individual: mistralai/mixtral-8x7b-chat | 0.547 | 0.000135 | — |
+| individual: WizardLM/WizardLM-13B-V1.2 | 0.431 | 0.000073 | — |
+| individual: meta/llama-2-70b-chat | 0.329 | 0.000203 | — |
+| individual: mistralai/mistral-7b-chat (cheapest) | 0.306 | 0.000046 | — |
+| individual: meta/code-llama-instruct-34b-chat | 0.202 | 0.000172 | — |
+
+The **oracle** reaches **0.912 quality at 0.000242 USD/example** — higher quality
+than the best single model (GPT-4, 0.781 @ 0.003292) at ~14× lower cost — by
+routing each prompt to the cheapest model that gets it right. The untrained
+**prior-heuristic** (AIQ 0.7427) sits between the static interpolation hull
+(0.7054) and the oracle upper bound (0.8701), exactly where an untrained baseline
+should.
+
+### The trained checkpoint on RouterBench — a NEGATIVE transfer result, reported plainly
+
+**The trained zen-router checkpoint scores AIQ 0.6248 — BELOW the non-routing
+interpolation hull (0.7054), the untrained prior heuristic (0.7427), and the
+oracle (0.8701).** On this eval it does not beat "just statically pick one model."
+Its cost-quality frontier collapses onto a single high-tier point (0.636 @
+0.002413, ≈ the `claude-v2`→`claude-opus-4-5` column) because the route head
+concentrates mass on the frontier-Claude tier for almost every prompt.
+
+This is expected, and the cause is documented, not massaged:
+
+- **Zero in-catalog overlap.** None of RouterBench's 11 (2023-era) models are in
+  the checkpoint's 28-class 2026 catalog. Scores are read through a **family/tier
+  bridge** (`benchmarks/checkpoint_map.yaml`), so this measures whether the head's
+  learned **task/tier discrimination transfers** onto RouterBench's universe — it
+  is **not** native in-catalog routing.
+- **Zero training rows for these targets.** The checkpoint's training corpus was
+  overwhelmingly Claude-Opus-labeled (see the main model card): 8 of 28 catalog
+  models carry any data, and the mapped-to classes for the *cheap* RouterBench
+  models (`zen5-flash`, `zen-agent-4b`, `deepseek-v3.2`, …) saw ~0 rows. The head
+  never learned to prefer a cheap model for an easy prompt, so under a
+  cost-penalized sweep it cannot trace a frontier — it just keeps voting frontier
+  tier, which is exactly the failure the AUC shows.
+
+**Family/tier bridge used** (RouterBench model → catalog class whose route-head
+logit is read; a clean 11→11 bijection):
+
+| RouterBench model | → catalog class | tier |
+|---|---|---|
+| gpt-4-1106-preview | gpt-5.5 | closed frontier |
+| claude-v2 | claude-opus-4-5 | closed frontier |
+| claude-v1 | claude-opus-4-1 | closed frontier (older) |
+| gpt-3.5-turbo-1106 | gpt-5.4-mini | closed cheap |
+| claude-instant-v1 | claude-haiku-4-5 | closed cheap |
+| meta/llama-2-70b-chat | kimi-k2 | open large |
+| mistralai/mixtral-8x7b-chat | deepseek-v3.2 | open MoE, cheap-mid |
+| zero-one-ai/Yi-34B-Chat | minimax-m2 | open mid |
+| meta/code-llama-instruct-34b-chat | zen5-coder | open code specialist |
+| mistralai/mistral-7b-chat | zen5-flash | open small / cheapest |
+| WizardLM/WizardLM-13B-V1.2 | zen-agent-4b | small open |
+
+**Bottom line.** The checkpoint's *own* holdout showed real discrimination among
+the models it was trained on (Run B route_acc 0.791, +25.8 pts over majority — see
+the model card), but that skill **does not transfer** to routing a disjoint,
+never-seen 2023 model set through a tier bridge. Beating the RouterBench frontier
+requires training on RouterBench's own per-model counterfactual labels (the
+balanced quality/cost signal this pipeline exists to provide), not a family/tier
+projection of a Claude-Opus-skewed catalog. The harness, mapping, and numbers are
+all reproducible with the commands above.
+
+## Smoke run (200 samples — pipeline sanity, NOT results)
+
+A 200-example CI-sized slice of RouterBench 0-shot proves the pipeline runs
 end-to-end. **This is a smoke test on a tiny random slice, not a benchmark
-result.** Full numbers require the whole suite (`make bench-data BENCH_SAMPLE=`).
+result** — use the full run above.
 
 ```
 make bench-data BENCH_SAMPLE=200      # -> 200 examples x 11 models = 2200 rows
 make bench-replicate BENCH_POLICY=oracle
 ```
 
-### RouterBench-style cost-quality replication — `oracle`
-
-- data: `data/profiles-routerbench.jsonl`  ·  prompts: **200**  ·  models: **11**
-- best individual model: **gpt-4-1106-preview** (quality 0.779 @ cost 0.003143)
-- cheapest model: **mistralai/mistral-7b-chat** (quality 0.309 @ cost 0.000044)
-
-| policy / baseline | quality | cost (USD/ex) | AIQ |
-|---|---:|---:|---:|
-| **oracle** (frontier, best point) | 0.909 | 0.000248 | 0.8606 |
-| oracle (per-prompt best) | 0.909 | 0.000248 | 0.8606 |
-| random router | 0.512 | 0.000794 | — |
-| interpolation (non-routing hull) | — | — | 0.6891 |
-| individual: gpt-4-1106-preview | 0.779 | 0.003143 | — |
-| individual: claude-v2 | 0.646 | 0.002295 | — |
-| individual: claude-v1 | 0.637 | 0.002044 | — |
-| individual: zero-one-ai/Yi-34B-Chat | 0.618 | 0.000181 | — |
-| individual: gpt-3.5-turbo-1106 | 0.604 | 0.000236 | — |
-| individual: claude-instant-v1 | 0.599 | 0.000223 | — |
-| individual: mistralai/mixtral-8x7b-chat | 0.547 | 0.000134 | — |
-| individual: WizardLM/WizardLM-13B-V1.2 | 0.417 | 0.000071 | — |
-| individual: mistralai/mistral-7b-chat | 0.309 | 0.000044 | — |
-| individual: meta/llama-2-70b-chat | 0.301 | 0.000198 | — |
-| individual: meta/code-llama-instruct-34b-chat | 0.175 | 0.000170 | — |
-
-The oracle reaches **0.909 quality at 0.000248 USD/example** — higher quality than
-the best single model (GPT-4, 0.779 @ 0.003143) at ~13× lower cost — because it
-routes each prompt to the cheapest model that gets it right. The prior-heuristic
-policy scores AIQ 0.7295, between the static interpolation hull (0.6891) and the
-oracle upper bound (0.8606), exactly where an untrained baseline should sit. A
-trained checkpoint (`--policy checkpoint --checkpoint out/zen-router`) is measured
-on the same axes.
+On that slice: oracle 0.909 @ 0.000248 (AIQ 0.8606), prior-heuristic AIQ 0.7295,
+interpolation hull 0.6891 — the same ordering as the full run, on 0.5% of the data.
 
 ## What "replication" means here — honestly
 

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -49,11 +50,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_matrix(path: Path) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """profile rows -> (models, Q, C) with Q,C shape (n_prompts, n_models).
+def load_matrix(path: Path) -> tuple[list[str], np.ndarray, np.ndarray, list[str]]:
+    """profile rows -> (models, Q, C, prompts) with Q,C shape (n_prompts, n_models).
 
     Keeps only prompts covered by ALL models (a clean rectangular matrix), which
-    is the RouterBench setting. Returns model order and the two matrices.
+    is the RouterBench setting. `prompts` is the row-aligned prompt list, so a
+    policy that scores prompts (e.g. checkpoint) lines up with Q/C row-for-row.
     """
     rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     models = sorted({r["model"] for r in rows})
@@ -78,7 +80,7 @@ def load_matrix(path: Path) -> tuple[list[str], np.ndarray, np.ndarray]:
         for m, (q, c) in by_prompt[p].items():
             Q[i, midx[m]] = q
             C[i, midx[m]] = c
-    return models, Q, C
+    return models, Q, C, full
 
 
 def route(score: np.ndarray, Q: np.ndarray, C: np.ndarray, lam: float) -> tuple[float, float]:
@@ -142,7 +144,7 @@ def main() -> None:
     ap.add_argument("--out-prefix", type=Path, default=ROOT / "out/bench/routerbench")
     args = ap.parse_args()
 
-    models, Q, C = load_matrix(args.data)
+    models, Q, C, prompts = load_matrix(args.data)
     n = Q.shape[0]
 
     # --- baselines (points) -------------------------------------------------
@@ -178,9 +180,12 @@ def main() -> None:
         d = individual[models.index(name)]
         headline = {"kind": "point", "name": f"individual:{name}", **{"cost": d["cost"], "quality": d["quality"]}}
     elif policy == "checkpoint":
-        score = checkpoint_scores(args.checkpoint, args.data, models)
+        score, mapping = checkpoint_scores(args.checkpoint, prompts, models, args.out_prefix)
         hull = frontier(score, Q, C)
-        headline = {"kind": "frontier", "name": "zen-router", "hull": hull, "aiq": aiq(hull)}
+        cpt_cost, cpt_q = route(score, Q, C, 0.0)  # lambda=0: pure route-head argmax
+        headline = {"kind": "frontier", "name": "zen-router", "hull": hull,
+                    "aiq": aiq(hull), "argmax_point": {"cost": cpt_cost, "quality": cpt_q},
+                    "tier_map": mapping}
     else:
         raise SystemExit(f"unknown policy '{policy}'")
 
@@ -217,11 +222,61 @@ def main() -> None:
     print(md)
 
 
-def checkpoint_scores(ckpt: Path | None, data: Path, models: list[str]) -> np.ndarray:
-    """Per-(prompt,model) routing score from a trained route head's logits."""
+def _resolve_backbone(base: str) -> str:
+    """Prefer a local snapshot of the public backbone if present (offline-safe,
+    identical weights); else the HF id, which transformers will fetch."""
+    local = Path("/Users/a/work/zen/models") / Path(base).name
+    return str(local) if (local / "config.json").exists() else base
+
+
+def _pooled_embeddings(model, tok, prompts: list[str], device: str, batch: int,
+                       cache: Path) -> np.ndarray:
+    """Batched last-token pooled embeddings (backbone forward), fp16 on MPS.
+
+    Cached to disk keyed by (backbone id + exact prompt set), so reruns are free.
+    """
+    import torch  # noqa: PLC0415
+
+    key = hashlib.sha256(("\n".join(prompts)).encode("utf-8")).hexdigest()
+    if cache.exists():
+        blob = np.load(cache, allow_pickle=False)
+        if str(blob["key"]) == key and blob["emb"].shape[0] == len(prompts):
+            print(f"embeddings: cache hit {cache} ({blob['emb'].shape})")
+            return blob["emb"]
+        print(f"embeddings: cache stale (key/shape mismatch), recomputing")
+    embs: list[np.ndarray] = []
+    total = len(prompts)
+    with torch.no_grad():
+        for s in range(0, total, batch):
+            chunk = prompts[s:s + batch]
+            enc = tok(chunk, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            enc = {k: v.to(device) for k, v in enc.items()}
+            pooled = model.embed(**enc)  # (b, hidden), fp32
+            embs.append(pooled.to(torch.float32).cpu().numpy())
+            if (s // batch) % 25 == 0:
+                print(f"  embed {min(s + batch, total)}/{total}")
+    emb = np.concatenate(embs, axis=0)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(cache, emb=emb, key=key)
+    print(f"embeddings: cached {emb.shape} -> {cache}")
+    return emb
+
+
+def checkpoint_scores(ckpt: Path | None, prompts: list[str], models: list[str],
+                      out_prefix: Path) -> tuple[np.ndarray, dict[str, str]]:
+    """Per-(prompt,model) routing score from the trained route head.
+
+    Heads-only frozen-backbone checkpoint: the backbone is the public base model,
+    the .pt holds only the three linear heads. We (1) batch-embed the prompts with
+    the public backbone (fp16 on MPS, cached), (2) apply the route head to get a
+    28-class catalog logit vector per prompt, (3) project those onto RouterBench's
+    11 models via the family/tier bridge in benchmarks/checkpoint_map.yaml.
+    Returns (scores, mapping-used).
+    """
     if ckpt is None:
         raise SystemExit("policy=checkpoint requires --checkpoint <dir>")
     import torch  # noqa: PLC0415
+    import yaml  # noqa: PLC0415
     from transformers import AutoTokenizer  # noqa: PLC0415
 
     import sys  # noqa: PLC0415
@@ -230,23 +285,45 @@ def checkpoint_scores(ckpt: Path | None, data: Path, models: list[str]) -> np.nd
 
     cfg = json.loads((ckpt / "router_config.json").read_text())
     catalog = cfg["catalog"]
+    cat_idx = {m: j for j, m in enumerate(catalog)}
+    device = ("mps" if torch.backends.mps.is_available()
+              else "cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
+    base = _resolve_backbone(cfg.get("base", str(ckpt)))
+    print(f"checkpoint: backbone={base} device={device} dtype={dtype}")
     tok = AutoTokenizer.from_pretrained(ckpt)
-    model = ZenRouter(cfg.get("base", str(ckpt)), len(cfg["tasks"]), len(catalog), 256)
-    model.load_state_dict(torch.load(ckpt / "zen-router.pt", map_location="cpu"))
-    model.eval()
-    prompts = [json.loads(l)["prompt"] for l in data.read_text().splitlines() if l.strip()]
-    prompts = list(dict.fromkeys(prompts))  # unique, order-preserving
-    # map data models -> catalog columns; models absent from catalog score 0
-    col = [catalog.index(m) if m in catalog else None for m in models]
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    model = ZenRouter(base, len(cfg["tasks"]), len(catalog), 256, dtype=dtype)
+    # heads-only load: backbone comes from the public base, heads from the .pt.
+    missing, unexpected = model.load_state_dict(
+        torch.load(ckpt / "zen-router.pt", map_location="cpu"), strict=False)
+    head_keys = {"task_head", "route_head", "feature_head"}
+    stray = [k for k in missing if k.split(".", 1)[0] in head_keys]
+    if stray or unexpected:
+        raise SystemExit(f"head load mismatch: missing={stray} unexpected={unexpected}")
+    model.to(device).eval()
+    # route head applied on cpu fp32 for numerical parity with training.
+    rh_w = model.route_head.weight.detach().float().cpu().numpy()
+    rh_b = model.route_head.bias.detach().float().cpu().numpy()
+
+    emb = _pooled_embeddings(model, tok, prompts, device, batch=64,
+                             cache=Path(f"{out_prefix}.emb.npz"))
+    route_logits = emb @ rh_w.T + rh_b  # (n_prompts, 28)
+
+    bridge = yaml.safe_load((ROOT / "benchmarks/checkpoint_map.yaml").read_text())["map"]
+    mapping: dict[str, str] = {}
     scores = np.zeros((len(prompts), len(models)))
-    with torch.no_grad():
-        for i, p in enumerate(prompts):
-            enc = tok(p, return_tensors="pt", truncation=True, max_length=2048)
-            _, r_logits, _ = model(**enc)
-            logits = r_logits[0].numpy()
-            for j, c in enumerate(col):
-                scores[i, j] = logits[c] if c is not None else logits.min()
-    return scores
+    for j, m in enumerate(models):
+        target = bridge.get(m)
+        if target is None or target not in cat_idx:
+            # documented fallback: unmapped model gets the per-prompt min logit.
+            scores[:, j] = route_logits.min(axis=1)
+            mapping[m] = "(unmapped -> min logit)"
+        else:
+            scores[:, j] = route_logits[:, cat_idx[target]]
+            mapping[m] = target
+    return scores, mapping
 
 
 def render_markdown(rep: dict) -> str:
@@ -267,6 +344,9 @@ def render_markdown(rep: dict) -> str:
     if h["kind"] == "frontier":
         hi = h["hull"][-1]
         lines.append(f"| **{h['name']}** (frontier, best point) | {hi[1]:.3f} | {hi[0]:.6f} | {h['aiq']:.4f} |")
+        if "argmax_point" in h:
+            ap = h["argmax_point"]
+            lines.append(f"| {h['name']} (route-head argmax, λ=0) | {ap['quality']:.3f} | {ap['cost']:.6f} | — |")
     else:
         lines.append(f"| **{h['name']}** | {h['quality']:.3f} | {h['cost']:.6f} | — |")
     lines.append(f"| oracle (per-prompt best) | {b['oracle_point']['quality']:.3f} | {b['oracle_point']['cost']:.6f} | {b['oracle_frontier']['aiq']:.4f} |")
@@ -277,6 +357,16 @@ def render_markdown(rep: dict) -> str:
     lines.append("")
     lines.append("AIQ = area under the cost-quality frontier / cost span "
                  "(average achievable quality across willingness-to-pay).")
+    if h["kind"] == "frontier" and "tier_map" in h:
+        lines.append("")
+        lines.append("**Family/tier bridge used** (RouterBench model -> catalog class the "
+                     "route-head logit is read from). This measures transferred task/tier "
+                     "discrimination, NOT native in-catalog routing:")
+        lines.append("")
+        lines.append("| RouterBench model | -> catalog class |")
+        lines.append("|---|---|")
+        for k in sorted(h["tier_map"]):
+            lines.append(f"| {k} | {h['tier_map'][k]} |")
     return "\n".join(lines)
 
 

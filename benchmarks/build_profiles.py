@@ -142,7 +142,10 @@ def main() -> None:
         )
 
     price_map = load_yaml(args.prices).get("prices", {}) if args.prices.exists() else {}
-    records = load_profile_records(suite, args.variant, args.sample)
+    # sample <= 0 means "use the whole suite" (0 is the documented full-run value);
+    # only a positive N subsamples. Guards df.sample(n=0) emptying the frame.
+    sample = args.sample if args.sample and args.sample > 0 else None
+    records = load_profile_records(suite, args.variant, sample)
     rows = list(rows_from_records(records, suite, price_map))
 
     out = args.out or (ROOT / f"data/profiles-{args.suite}.jsonl")
