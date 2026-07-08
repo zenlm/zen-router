@@ -68,77 +68,111 @@ make quantize # GGUF Q4_K_M + MLX
 
 ## Measured
 
-A real SFT run on this repo's own tooling, on real local AI-assistant usage.
-Everything below came from a command that actually ran; nothing is projected.
+Two real SFT runs on this repo's tooling, on real AI-assistant usage. Every
+number below came from a command that actually ran; nothing is projected. The
+**published weights are from Run B** (the frozen-backbone, private-safe run).
 
 **Hardware / stack.** Apple M4 Max, 128 GB unified memory, macOS 26.5. PyTorch
-2.12.1 + Transformers 5.13.0, training and eval on the Metal (MPS) backend,
-fp32. Backbone: on-disk `zen-nano-0.6b` (Qwen3, 596M params, hidden 1024, 28
-layers).
+2.12.1 + Transformers 5.13.0, MPS backend, fp32. Backbone: `zen-nano-0.6b`
+(Qwen3, 596M params, hidden 1024, 28 layers).
 
-**Dataset (provenance).** Built by `training/extract_local_sessions.py` from
-this machine's actual assistant logs:
-`~/.claude/projects/**/*.jsonl` (Claude Code) and `~/.codex/sessions/**/*.jsonl`
-(Codex). Each user prompt is paired with the model that actually served it;
-`quality` is a fixed **proxy = 1.0** (we cannot observe the counterfactual
-quality of models that did not run), `cost` = served tokens x the catalog's
-`cost_per_1k`, `latency_ms` = 0 (not recorded in the logs), and `task` comes
-from a keyword heuristic that is a direct port of `hanzo-router`'s
-`Heuristic::classify`. `training/build_dataset.py` then collapses to one
-max-reward row per unique prompt.
+**How the data is built.** `extract_local_sessions.py` and
+`extract_agentic_dataset.py` (shared logic in `session_common.py`) pair each
+real user prompt with the model that actually served it. `quality` is a fixed
+**proxy = 1.0** (the counterfactual quality of models that did not run is
+unobservable), `cost` = served tokens x the catalog's `cost_per_1k`,
+`latency_ms` = 0 (not in the logs), `task` = a keyword heuristic ported from
+`hanzo-router`'s `Heuristic::classify`. `build_dataset.py` collapses to one
+max-reward row per unique prompt. Real model ids are mapped 1:1 to catalog ids
+(dated Anthropic ids normalized, e.g. `claude-opus-4-5-20251101` ->
+`claude-opus-4-5`); no collapsing into generic tiers.
 
-- 5,975 raw eval rows -> **5,455 unique-prompt routing rows** -> 80/20 split =
-  **4,364 train / 1,091 holdout**.
+**Catalog & route head.** `training/catalog.yaml` is the routable universe: **28
+models** = 3 local zen + zen cloud tiers + Anthropic / OpenAI / Gemini / Grok /
+DeepSeek / Kimi / MiniMax, priced from the gateway's live config
+(`hanzoai/ai/conf/models.yaml`, refreshed from pricing.hanzo.ai; models not yet
+in it -- e.g. `claude-fable-5`, `gpt-5.5`, `gemini-3-*`, `grok-4` -- carry a
+`# verify` provider-list price). The route head sizes from the catalog
+(`classes_from: catalog`), so the runs printed `route head: 24`/`28 classes`
+(up from 7 in the scaffold) with no code change -- **adding a routable model is
+one catalog row.**
 
-**Class balance (the load-bearing caveat).** This machine runs Claude Code on
-Opus almost exclusively, so the labels are severely imbalanced:
+### Run A -- local logs, full fine-tune
 
-- Route label: `claude-opus-4-8` **94.6%**, `claude-haiku-4-5-20251001` 4.9%,
-  `claude-fable-5` 0.2%, `gpt-5.5` 0.2%, `claude-sonnet-4-6` 0.1%. The other 19
-  catalog models have **zero** training rows.
-- Task label: code 59.6%, general 24.0%, cheap_chat 8.5%, math 5.3%,
-  reasoning 2.6%, long_context 0.07%, and vision/creative 0%.
+- **Data**: `~/.claude/projects` + `~/.codex/sessions`. 5,975 raw ->
+  **5,455 unique-prompt rows** -> random 80/20 = 4,364 train / 1,091 holdout.
+- **Class balance** (the load-bearing caveat): `claude-opus-4-8` **94.6%**,
+  `claude-haiku-4-5` 4.9%, others <0.3%; 19 catalog models have zero rows.
+  Tasks: code 59.6%, general 24%, cheap_chat 8.5%, math 5.3%, reasoning 2.6%,
+  long_context 0.07%, vision/creative 0%.
+- **Train**: full fine-tune (backbone + heads), 1 epoch, batch 16, seq 512,
+  ~17 min; loss 7.23 -> ~0.7. Artifact: 2.4 GB full weights.
+- **Holdout (n=1,091)**: task_acc **0.824**, route_acc **0.961**, top3 **0.999**
+  -- but route_acc barely clears the 94.2% majority baseline and the head emits
+  only **2 of 24** models. High route_acc here is label memorization, not
+  routing skill.
 
-**Catalog & route head.** `training/catalog.yaml` is the routable universe: 3
-local zen models + 21 cloud models (zen cloud tiers + Anthropic / OpenAI /
-Gemini / Grok / DeepSeek / Kimi), priced from the gateway's live config
-(`hanzoai/ai/conf/models.yaml`, refreshed from pricing.hanzo.ai). Because the
-route head sizes from the catalog (`classes_from: catalog`), the SFT run printed
-`route head: 24 classes` (up from 7 in the original scaffold) with no code
-change -- adding a routable model is one catalog row.
+### Run B -- local + private agentic corpus, FROZEN backbone (published)
 
-**Training.** 1 epoch, batch 16, seq 512, AdamW lr 2e-5, ~17 min wall on MPS;
-two-head cross-entropy loss fell 7.23 -> ~0.7-1.1.
+- **Data**: Run A's local rows (5,993) **plus** the private
+  `hanzoai/zen-agentic-dataset-private`. That corpus is 9.9B tokens / 2.3M
+  samples, but is mostly synthetic identity SFT + git history; the routing
+  signal lives in **embedded Claude Code transcripts** inside assistant turns.
+  Streaming the 35 train chunks + valid split yielded only **4,420** extractable
+  routing rows (transcripts sit in chunks aa-ad + valid; the rest have no
+  served-model label). Combined and deduped: **9,713 unique rows**, stratified
+  80/20 by route = **7,772 train / 1,941 holdout**.
+- **Class balance**: still Opus-dominated but more diverse --
+  `claude-opus-4-8` 53%, `claude-opus-4-5` 35%, `claude-haiku-4-5` 6%,
+  `claude-sonnet-4-5` 5%, then `claude-opus-4-1`/`claude-fable-5`/`gpt-5.5`/
+  `claude-sonnet-4-6`. **8 models carry data** (vs 5 in Run A).
+- **Privacy-safe training**: `--freeze-backbone` freezes the backbone
+  (`requires_grad=False`), precomputes pooled embeddings once (cached), and fits
+  **only the three linear heads** (12 epochs, seconds; loss 3.04 -> 0.97). The
+  published `zen-router.pt` is **1.2 MB of head weights only** -- the backbone
+  stays the public `zenlm/zen-nano-0.6b`, so the release cannot memorize or
+  reconstruct any private corpus text.
+- **Holdout (n=1,941)**: task_acc **0.723**, route_acc **0.791**, top3 **0.990**.
 
-**Accuracy (1,091-prompt holdout).**
+| metric | Run A (full, local) | Run B (frozen, combined) | reading |
+|--------|:------:|:------:|---------|
+| route models with data | 5 | **8** | corpus adds opus-4-5, sonnet-4-5, opus-4-1 |
+| route head size | 24 | **28** | auto-sized from catalog |
+| task_acc   | **0.824** | 0.723 | freezing the backbone costs task expressivity |
+| route_acc  | 0.961 | **0.791** | Run B beats its **53.3%** majority baseline by **+25.8 pts** and emits **5** models (opus-4-8 x928, opus-4-5 x856, haiku x125, sonnet-4-5 x31, fable x1) -- **genuine multi-model discrimination**, unlike Run A's memorized single label |
+| route_top3 | 0.999 | 0.990 | |
+| artifact | 2.4 GB | **1.2 MB** | heads only |
 
-| metric | value | honest reading |
-|--------|------:|----------------|
-| task_acc   | **0.824** | the meaningful signal: it learned the task taxonomy (predicts code/general/cheap_chat/math; never predicts the near-absent reasoning/creative/vision/long_context) |
-| route_acc  | **0.961** | barely above the 94.2% majority-class baseline; the head only ever emits 2 of 24 models (`claude-opus-4-8` x1029, `claude-haiku-4-5-20251001` x62) because the other 22 have no data |
-| route_top3 | **0.999** | trivially high -- Opus is in the top-3 for essentially every prompt |
+Run B's route_acc is a *real* signal: the model learned to tell
+`claude-opus-4-8` from `claude-opus-4-5` and route cheap prompts to haiku,
+scoring 26 points over the majority baseline. Run A's higher route_acc is not.
 
-Route accuracy is **not** evidence of good multi-model routing here -- it is
-evidence that the model memorized the dominant label. The route head is
-structurally correct (24 logits, gateway-priced catalog) and the mechanism is
-proven; teaching it to route across providers needs balanced data (a gateway
-telemetry export where many models actually serve), not more local Opus logs.
+**Honest bottom line.** Both corpora are overwhelmingly Claude-Opus-labeled --
+this machine and the private corpus both ran Opus for almost everything, and
+19-20 of the 28 catalog models never appear. The router head is structurally
+complete (28 gateway-priced logits) and now does real discrimination among the
+models it has seen, but true cross-provider routing needs **balanced
+counterfactual labels** -- the same prompt served by many models with measured
+quality/cost/latency. That is exactly what the RouterBench pipeline in
+`benchmarks/` provides, and is the stated path forward.
 
-**Single-forward routing latency.** One prompt, tokenize + forward, MPS fp32:
-**mean 137.3 ms, p50 130.3 ms, p99 384.7 ms**. This is unquantized eager
-Transformers; the `<50 ms CPU / <10 ms Metal` target is at Q4 (see
+**Single-forward routing latency (Run B, n=1,941).** One prompt, tokenize +
+forward, MPS fp32: **mean 95.7 ms, p50 57.0 ms, p99 303.6 ms**. Unquantized
+eager Transformers; the `<50 ms CPU / <10 ms Metal` target is at Q4 (see
 `make quantize`, not run here). For reference, `llama.cpp` prompt-processing of
-the same `zen-nano-0.6b` at Q4_K_M on this box runs 9,092 tok/s (a 1k-token
-forward ~= 112 ms).
+`zen-nano-0.6b` at Q4_K_M on this box runs 9,092 tok/s (a 1k-token forward
+~= 112 ms).
 
 **Mechanism vs. model.** The Rust routing mechanism this model plugs into
 (`hanzo-router` + `enso`) decides in **1.6 us** (rules) to **16 us** (learned
 featurize + bilinear select) -- 4-5 orders of magnitude below one 0.6B forward,
 so the encoder-mode router forward dominates end-to-end cost, as designed.
 
-Reproduce: `python training/extract_local_sessions.py` -> `make data` (+ 80/20
-split) -> `python training/sft.py --config training/config.local.yaml` ->
-`python -m eval.eval_routing --model out/zen-router --data data/routing-eval.jsonl`.
+Reproduce Run B: `python training/extract_local_sessions.py --out data/evals-local.jsonl`
++ `python training/extract_agentic_dataset.py` -> combine -> `build_dataset.py`
+-> stratified split -> `python training/sft.py --config training/config.scaled.yaml
+--freeze-backbone` -> `python -m eval.eval_routing --model out/zen-router --data
+data/routing-eval.jsonl`.
 
 ## Serving & integration
 

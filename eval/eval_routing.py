@@ -30,7 +30,9 @@ def main() -> None:
     base = cfg.get("base", str(args.model))  # backbone architecture source; weights come from the .pt
     tok = AutoTokenizer.from_pretrained(args.model)
     model = ZenRouter(base, len(tasks), len(catalog), 256)
-    model.load_state_dict(torch.load(args.model / "zen-router.pt", map_location="cpu"))
+    # strict=False: a frozen-backbone run publishes only the head weights, so the
+    # backbone stays the (public) base loaded above; a full run matches all keys.
+    model.load_state_dict(torch.load(args.model / "zen-router.pt", map_location="cpu"), strict=False)
     model.eval()
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     model.to(device)
